@@ -150,20 +150,25 @@ class AuthHub(Application):
     @catch_config_error
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
+        self.log.info("Initializing AuthHub")
         self.parse_command_line(*args, **kwargs)
         if self.generate_config:
             return
         
+        self.log.info("Loading config")
         self.load_config_file(self.config_file)
         if self.auto_IdP_metadata:
+            self.log.info("Getting the IdP metadata.")
             idp_data = OneLogin_Saml2_IdPMetadataParser.parse_remote(self.auto_IdP_metadata)
             self.saml_settings = OneLogin_Saml2_IdPMetadataParser.merge_settings(self.saml_settings, idp_data)
 
+        self.init_logging()
         self.init_handlers()
         self.init_tornado_settings()
         self.init_tornado()
     
     def init_handlers(self):
+        self.log.info("Initializing handlers.")
         self.handlers = [
                          (r"/saml_login", SAMLLogin),
                          (self.metadata_url, SAMLMetadataHandler),
@@ -172,6 +177,7 @@ class AuthHub(Application):
                          ]
 
     def init_logging(self):
+        self.log.info("Initializing loggers.")
         # This prevents double log messages because tornado use a root logger that
         # self.log is a child of. The logging module dipatches log messages to a log
         # and all of its ancenstors until propagate is set to False.
@@ -193,6 +199,7 @@ class AuthHub(Application):
 
 
     def init_tornado_settings(self):
+        self.log.info("Initializing tornado settings.")
         self.tornado_settings = dict(
             config = self.config,
             log=self.log,
@@ -204,10 +211,12 @@ class AuthHub(Application):
         )
 
     def init_tornado(self):
+        self.log.info("Initializing tornado app.")
         self.tornado_app = web.Application(handlers=self.handlers, **self.tornado_settings)
 
     def start(self):
 
+        self.log.info("Starting the app.")
         if self.generate_config:
             self.write_config_file()
             return
