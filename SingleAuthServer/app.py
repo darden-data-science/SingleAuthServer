@@ -40,7 +40,7 @@ class AuthHub(Application):
         config=True
     )
 
-    cookie_secret = Bytes(
+    cookie_secret = Unicode(
         help="""The cookie secret to use to encrypt cookies.
         Loaded from the AUTH_COOKIE_SECRET env variable by default.
         Should be exactly 256 bits (32 bytes).
@@ -197,13 +197,12 @@ class AuthHub(Application):
         logger.parent = self.log
         logger.setLevel(self.log.level)
 
-
     def init_tornado_settings(self):
         self.log.info("Initializing tornado settings.")
         self.tornado_settings = dict(
             config = self.config,
             log=self.log,
-            cookie_secret = self.cookie_secret,
+            cookie_secret = self.cookie_secret.encode('utf_8'),
             saml_settings = self.saml_settings,
             saml_namespace = self.saml_namespace,
             xpath_username_location = self.xpath_username_location,
