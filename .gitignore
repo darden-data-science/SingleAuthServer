@@ -1,0 +1,5 @@
+authhub_config.py
+.DS_Store
+/.vscode
+__pycache__
+*.egg-info
