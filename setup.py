@@ -17,7 +17,7 @@ from __future__ import print_function
 import os
 import sys
 
-from setuptools import setup
+from setuptools import setup, find_packages
 from setuptools.command.bdist_egg import bdist_egg
 
 class bdist_egg_disabled(bdist_egg):
@@ -42,7 +42,7 @@ with open(pjoin(here, 'SingleAuthServer', '_version.py')) as f:
 
 setup_args = dict(
     name                = 'SingleAuthServer',
-    packages            = ['SingleAuthServer'],
+    packages            = find_packages(exclude=["*.tests", "*.tests.*", "tests.*", "tests"]),
     version             = version_ns['__version__'],
     description         = "SingleAuthServer: Authenticate multiple JupyterHub servers with a single sign on.",
     long_description    = open("README.md").read(),
