@@ -170,7 +170,7 @@ class AuthHub(Application):
     def init_handlers(self):
         self.log.info("Initializing handlers.")
         self.handlers = [
-                         (r"/saml_login", SAMLLogin),
+                         (r"/saml-login", SAMLLogin),
                          (self.metadata_url, SAMLMetadataHandler),
                          (r'/health$', HealthCheckHandler),
                          (r'(.*)', Template404)
