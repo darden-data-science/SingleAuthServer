@@ -8,6 +8,7 @@ from lxml import etree
 import json
 
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
+from onelogin.saml2.settings import OneLogin_Saml2_Settings
 
 from ..utils import url_path_join
 
@@ -93,6 +94,9 @@ class SAMLLogin(SAMLBaseHandler):
     def post(self):
         req = self.prepare_tornado_request(self.request)
         auth = self.init_saml_auth(req)
+
+        print(auth.get_settings().is_debug_active())
+        print(auth.get_settings().is_debug_active())
 
         auth.process_response()
         errors = auth.get_errors()
