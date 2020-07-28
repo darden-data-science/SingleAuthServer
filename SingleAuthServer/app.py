@@ -9,7 +9,7 @@ from traitlets.config import Application, catch_config_error
 
 from onelogin.saml2.idp_metadata_parser import OneLogin_Saml2_IdPMetadataParser
 
-from traitlets import List, Bool, Integer, Set, Unicode, Dict, Any, default, observe, Instance, Float, validate, Bytes, Type
+from traitlets import List, Bool, Integer, Set, Unicode, Dict, Any, default, observe, Instance, Float, validate, Bytes, Type, TraitError
 from .handlers import SAMLLogin, SAMLMetadataHandler, Template404, HealthCheckHandler
 
 from .utils import url_path_join
@@ -95,6 +95,24 @@ class AuthHub(Application):
         """,
         config=True
     )
+
+    force_https = Unicode(
+        default_value = '',
+        help="""
+        This forces the tornado request to have https on. This is important for
+        running behind a reverse proxy. If it is "on", then this forces https
+        on. If "off", forces it off. If blank (the default), the application
+        decides.
+        """,
+        config=True
+    )
+
+    @validate('force_https')
+    def _valid_force_https(self, proposal):
+        force_https = proposal['value']
+        if force_https not in ["on", "off", ""]:
+            raise TraitError('force_https should be \'on\', \'off\', or \'\', but instead it is: %r' % str(force_https))
+        return proposal['value']
 
     @default('log_level')
     def _log_level_default(self):
@@ -206,6 +224,7 @@ class AuthHub(Application):
             saml_settings = self.saml_settings,
             saml_namespace = self.saml_namespace,
             xpath_username_location = self.xpath_username_location,
+            force_https = self.force_https,
             app = self
         )
 

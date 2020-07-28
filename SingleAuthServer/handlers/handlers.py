@@ -44,6 +44,10 @@ class SAMLBaseHandler(BaseHandler):
     def saml_settings(self):
         return self.settings.get('saml_settings')
 
+    @property
+    def force_https(self):
+        return self.settings.get('force_https')
+
     # @property
     # def secure_token_name(self):
     #     return self.settings.get('secure_token_name')
@@ -54,8 +58,7 @@ class SAMLBaseHandler(BaseHandler):
     # def separation_character(self):
     #     return self.settings.get('separation_character', '^')
 
-    @staticmethod
-    def prepare_tornado_request(request):
+    def prepare_tornado_request(self, request):
 
         dataDict = {}
         for key in request.arguments:
@@ -70,6 +73,10 @@ class SAMLBaseHandler(BaseHandler):
             'post_data': dataDict,
             'query_string': request.query
         }
+
+        if self.force_https:
+            result['https'] = self.force_https
+
         return result
 
     def init_saml_auth(self, req):
