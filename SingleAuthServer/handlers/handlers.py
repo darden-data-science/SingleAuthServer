@@ -95,13 +95,14 @@ class SAMLLogin(SAMLBaseHandler):
         req = self.prepare_tornado_request(self.request)
         auth = self.init_saml_auth(req)
 
-        print(auth.get_settings().is_debug_active())
-        print(auth.get_settings().is_debug_active())
+        self.log.debug("Debug setting is: %r" % str(auth.get_settings().is_debug_active()))
+        self.log.debug("Strict mode is active: %r" % str(auth.get_settings().is_strict()))
 
         auth.process_response()
         errors = auth.get_errors()
         if errors:
             self.log.warning("Errors are:\n" + "\n".join(errors))
+            self.log.warning("Last error reason is: %r" % auth.get_last_error_reason())
 
         if not auth.is_authenticated():
             self.log.warning("Unauthorized login attempt.")
