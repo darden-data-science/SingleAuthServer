@@ -4,6 +4,7 @@ from tornado.log import app_log, access_log, gen_log
 import tornado.httpserver
 import os
 import logging
+import binascii
 
 from traitlets.config import Application, catch_config_error
 
@@ -13,6 +14,12 @@ from traitlets import List, Bool, Integer, Set, Unicode, Dict, Any, default, obs
 from .handlers import SAMLLogin, SAMLMetadataHandler, Template404, HealthCheckHandler
 
 from .utils import url_path_join
+
+COOKIE_SECRET_BYTES = (
+    32  # the number of bytes to use when generating new cookie secrets
+)
+
+_mswindows = os.name == "nt"
 
 class AuthHub(Application):
 
@@ -40,12 +47,26 @@ class AuthHub(Application):
         config=True
     )
 
-    cookie_secret = Unicode(
+    cookie_secret = Bytes(
         help="""The cookie secret to use to encrypt cookies.
         Loaded from the AUTH_COOKIE_SECRET env variable by default.
         Should be exactly 256 bits (32 bytes).
         """
     ).tag(config=True, env='AUTH_COOKIE_SECRET')
+
+    @observe('cookie_secret')
+    def _cookie_secret_check(self, change):
+        secret = change.new
+        if len(secret) > COOKIE_SECRET_BYTES:
+            self.log.warning(
+                "Cookie secret is %i bytes.  It should be %i.",
+                len(secret),
+                COOKIE_SECRET_BYTES,
+            )
+
+    cookie_secret_file = Unicode(
+        'authhub_cookie_secret', help="""File in which to store the cookie secret."""
+    ).tag(config=True)
 
     port = Integer(default_value=8888, help="Port that server will listen on.").tag(config=True)
 
@@ -181,6 +202,7 @@ class AuthHub(Application):
             self.saml_settings = OneLogin_Saml2_IdPMetadataParser.merge_settings(self.saml_settings, idp_data)
 
         self.init_logging()
+        self.init_secrets()
         self.init_handlers()
         self.init_tornado_settings()
         self.init_tornado()
@@ -220,7 +242,7 @@ class AuthHub(Application):
         self.tornado_settings = dict(
             config = self.config,
             log=self.log,
-            cookie_secret = self.cookie_secret.encode('utf_8'),
+            cookie_secret = self.cookie_secret,
             saml_settings = self.saml_settings,
             saml_namespace = self.saml_namespace,
             xpath_username_location = self.xpath_username_location,
@@ -231,6 +253,60 @@ class AuthHub(Application):
     def init_tornado(self):
         self.log.info("Initializing tornado app.")
         self.tornado_app = web.Application(handlers=self.handlers, **self.tornado_settings)
+
+    def init_secrets(self):
+        trait_name = 'cookie_secret'
+        trait = self.traits()[trait_name]
+        env_name = trait.metadata.get('env')
+        secret_file = os.path.abspath(os.path.expanduser(self.cookie_secret_file))
+        secret = self.cookie_secret
+        secret_from = 'config'
+        # load priority: 1. config, 2. env, 3. file
+        secret_env = os.environ.get(env_name)
+        if not secret and secret_env:
+            secret_from = 'env'
+            self.log.info("Loading %s from env[%s]", trait_name, env_name)
+            secret = binascii.a2b_hex(secret_env)
+        if not secret and os.path.exists(secret_file):
+            secret_from = 'file'
+            self.log.info("Loading %s from %s", trait_name, secret_file)
+            try:
+                if not _mswindows:  # Windows permissions don't follow POSIX rules
+                    perm = os.stat(secret_file).st_mode
+                    if perm & 0o07:
+                        msg = "cookie_secret_file can be read or written by anybody"
+                        raise ValueError(msg)
+                with open(secret_file) as f:
+                    text_secret = f.read().strip()
+                secret = binascii.a2b_hex(text_secret)
+            except Exception as e:
+                self.log.error(
+                    "Refusing to run AuthHub with invalid cookie_secret_file. "
+                    "%s error was: %s",
+                    secret_file,
+                    e,
+                )
+                self.exit(1)
+
+        if not secret:
+            secret_from = 'new'
+            self.log.debug("Generating new %s", trait_name)
+            secret = os.urandom(COOKIE_SECRET_BYTES)
+
+        if secret_file and secret_from == 'new':
+            # if we generated a new secret, store it in the secret_file
+            self.log.info("Writing %s to %s", trait_name, secret_file)
+            text_secret = binascii.b2a_hex(secret).decode('ascii')
+            with open(secret_file, 'w') as f:
+                f.write(text_secret)
+                f.write('\n')
+            if not _mswindows:  # Windows permissions don't follow POSIX rules
+                try:
+                    os.chmod(secret_file, 0o600)
+                except OSError:
+                    self.log.warning("Failed to set permissions on %s", secret_file)
+        # store the loaded trait value
+        self.cookie_secret = secret
 
     def start(self):
 
