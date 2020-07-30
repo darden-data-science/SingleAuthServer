@@ -50,6 +50,10 @@ class SAMLBaseHandler(BaseHandler):
         return self.settings.get('xpath_username_location', '//saml:NameID/text()')
 
     @property
+    def saml_custom_base_path(self):
+        return self.settings.get('saml_custom_base_path')
+
+    @property
     def saml_settings(self):
         return self.settings.get('saml_settings')
 
@@ -89,7 +93,7 @@ class SAMLBaseHandler(BaseHandler):
         return result
 
     def init_saml_auth(self, req):
-        auth = OneLogin_Saml2_Auth(req, self.saml_settings)
+        auth = OneLogin_Saml2_Auth(req, self.saml_settings, custom_base_path=self.saml_custom_base_path)
         return auth
 
 

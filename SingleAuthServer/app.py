@@ -78,6 +78,15 @@ class AuthHub(Application):
         help="url for the database. e.g. `sqlite:///authhub.sqlite`",
     ).tag(config=True)
 
+    saml_custom_base_path = Unicode(
+        os.getcwd(),
+        help="""
+        Path to a set of custom settings for SAML and a subfolder called certs 
+        that holds the SP cert and key.
+        Default is the current working directory.
+        """,
+    ).tag(config=True)
+
     saml_settings = Dict(
         help="""
         This is a nested dictionary of settings for the python3-saml toolkit.
@@ -257,6 +266,7 @@ class AuthHub(Application):
             config = self.config,
             log=self.log,
             cookie_secret = self.cookie_secret,
+            saml_custom_base_path = self.saml_custom_base_path,
             saml_settings = self.saml_settings,
             saml_namespace = self.saml_namespace,
             xpath_username_location = self.xpath_username_location,
