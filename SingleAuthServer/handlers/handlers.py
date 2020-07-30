@@ -93,6 +93,7 @@ class SAMLBaseHandler(BaseHandler):
         return result
 
     def init_saml_auth(self, req):
+        self.log.debug("SAML custom base path is %r" % self.saml_custom_base_path)
         auth = OneLogin_Saml2_Auth(req, self.saml_settings, custom_base_path=self.saml_custom_base_path)
         return auth
 
