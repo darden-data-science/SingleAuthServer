@@ -2,3 +2,4 @@ tornado>=6.0.0
 python3-saml>=1.9.0
 lxml>=4.4.0
 traitlets>=4.3.3
+tornado-sqlalchemy>=0.7.0

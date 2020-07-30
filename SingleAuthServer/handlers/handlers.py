@@ -2,6 +2,10 @@ from tornado import web
 from tornado.httputil import url_concat, split_host_and_port
 from urllib.parse import urlparse, parse_qs, parse_qsl, urlunparse, urlencode
 from tornado.log import app_log
+import time
+from copy import deepcopy
+
+from tornado_sqlalchemy import as_future, SessionMixin, SQLAlchemy
 
 from lxml import etree
 
@@ -11,11 +15,16 @@ from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from onelogin.saml2.settings import OneLogin_Saml2_Settings
 
 from ..utils import url_path_join
+from ..orm import User
 
-class BaseHandler(web.RequestHandler):
+class BaseHandler(SessionMixin, web.RequestHandler):
     @property
     def log(self):
         return self.settings.get('log', app_log)
+
+    @property
+    def db(self):
+        return self.settings.get('db')
 
 class Template404(BaseHandler):
     """Render our 404 template"""
@@ -123,6 +132,39 @@ class SAMLLogin(SAMLBaseHandler):
             self.log.warning("SAML is valid, but it does not contain a username at the expected place.")
             raise web.HTTPError(404)
 
+        message_id = auth.get_last_message_id()
+
+        with self.make_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user is None:
+                self.log.info("User %r is not in the database. Adding..." % username)
+                user = User(username=username)
+                session.add(user)
+            
+            self.log.debug("User auth state is: %r" % user.auth_state)
+
+            if isinstance(user.auth_state, dict):
+                message_history = user.auth_state.get('saml_message_history', {})
+
+                if message_id in message_history:
+                    self.log.warning("Replay attack on user %r. Stop authentication.", username)
+                    raise web.HTTPError(403, log_message="Invalid login credentials.")
+
+            else:
+                user.auth_state = {}
+
+            self.log.debug("Adding message id %r with expiration %r to auth_state." % (message_id, auth.get_last_assertion_not_on_or_after()))
+            # This is because you cannot update JSON fields in place in SQLAlchemy.
+            # It needs to be a new dictionary, hence the deepcopy.
+            auth_state = deepcopy(user.auth_state)
+            saml_message_history = auth_state.setdefault('saml_message_history', {})
+            saml_message_history[message_id] = auth.get_last_assertion_not_on_or_after()
+
+            auth_state['saml_message_history'] = self.remove_expired_message_ids(saml_message_history)
+
+            self.log.debug("Attempting to write auth_state of: %r" % auth_state)
+            user.auth_state = auth_state
+
         if 'RelayState' not in self.request.arguments:
             self.log.warning("RelayState not in url query parameters.")
             raise web.HTTPError(400)
@@ -155,6 +197,15 @@ class SAMLLogin(SAMLBaseHandler):
         return_url = url_concat(return_url, {self.auth_token_name: return_token})
 
         self.redirect(return_url)
+
+    def remove_expired_message_ids(self, message_history):
+        now = time.time()
+        self.log.debug("Removing expired message IDs. Current time is %r" % now)
+        keys = [k for k, v in message_history.items() if not isinstance(v, int) or v < now]
+        for k in keys:
+            self.log.debug("Removing expired message with id %r and expiration time %r" % (k, message_history[k]))
+            message_history.pop(k)
+        return message_history
 
 class SAMLMetadataHandler(SAMLBaseHandler):
     def get(self):

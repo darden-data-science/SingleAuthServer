@@ -3,3 +3,5 @@ authhub_config.py
 /.vscode
 __pycache__
 *.egg-info
+authhub_cookie_secret
+authhub.sqlite

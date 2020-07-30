@@ -6,6 +6,8 @@ import os
 import logging
 import binascii
 
+from tornado_sqlalchemy import SQLAlchemy
+
 from traitlets.config import Application, catch_config_error
 
 from onelogin.saml2.idp_metadata_parser import OneLogin_Saml2_IdPMetadataParser
@@ -14,6 +16,7 @@ from traitlets import List, Bool, Integer, Set, Unicode, Dict, Any, default, obs
 from .handlers import SAMLLogin, SAMLMetadataHandler, Template404, HealthCheckHandler
 
 from .utils import url_path_join
+from .orm import db
 
 COOKIE_SECRET_BYTES = (
     32  # the number of bytes to use when generating new cookie secrets
@@ -69,6 +72,11 @@ class AuthHub(Application):
     ).tag(config=True)
 
     port = Integer(default_value=8888, help="Port that server will listen on.").tag(config=True)
+
+    db_url = Unicode(
+        'sqlite:///authhub.sqlite',
+        help="url for the database. e.g. `sqlite:///authhub.sqlite`",
+    ).tag(config=True)
 
     saml_settings = Dict(
         help="""
@@ -202,6 +210,7 @@ class AuthHub(Application):
             self.saml_settings = OneLogin_Saml2_IdPMetadataParser.merge_settings(self.saml_settings, idp_data)
 
         self.init_logging()
+        self.init_db()
         self.init_secrets()
         self.init_handlers()
         self.init_tornado_settings()
@@ -215,6 +224,11 @@ class AuthHub(Application):
                          (r'/health$', HealthCheckHandler),
                          (r'(.*)', Template404)
                          ]
+
+    def init_db(self):
+        self.log.info("Initializing the database.")
+        db.configure(self.db_url, engine_options={'echo': False})
+        db.create_all()
 
     def init_logging(self):
         self.log.info("Initializing loggers.")
@@ -247,7 +261,8 @@ class AuthHub(Application):
             saml_namespace = self.saml_namespace,
             xpath_username_location = self.xpath_username_location,
             force_https = self.force_https,
-            app = self
+            app = self,
+            db = db
         )
 
     def init_tornado(self):
