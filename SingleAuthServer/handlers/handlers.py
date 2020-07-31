@@ -90,6 +90,8 @@ class SAMLBaseHandler(BaseHandler):
         if self.force_https:
             result['https'] = self.force_https
 
+        self.log.debug("The values used for the tornado request are: %r" % result)
+
         return result
 
     def init_saml_auth(self, req):
