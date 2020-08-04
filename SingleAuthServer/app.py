@@ -5,6 +5,10 @@ import tornado.httpserver
 import os
 import logging
 import binascii
+import signal
+import asyncio
+import time
+from functools import partial
 
 from tornado_sqlalchemy import SQLAlchemy
 
@@ -23,6 +27,8 @@ COOKIE_SECRET_BYTES = (
 )
 
 _mswindows = os.name == "nt"
+
+TORNADO_SHUTDOWN_WAIT=10
 
 class AuthHub(Application):
 
@@ -333,6 +339,39 @@ class AuthHub(Application):
         # store the loaded trait value
         self.cookie_secret = secret
 
+    def sig_handler(self, server, sig, frame):
+        io_loop = tornado.ioloop.IOLoop.instance()
+
+        def stop_loop(server: Any, deadline: float):
+            now = time.time()
+
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+            if now < deadline and len(tasks) > 0:
+                self.log.info(f'Awaiting {len(tasks)} pending tasks: {tasks}')
+                io_loop.add_timeout(now + 1, stop_loop, server, deadline)
+                return
+
+            pending_connection = len(server._connections)
+            if now < deadline and pending_connection > 0:
+                self.log.info(f'Waiting on {pending_connection} connections to complete.')
+                io_loop.add_timeout(now + 1, stop_loop, server, deadline)
+            else:
+                self.log.info(f'Continuing with {pending_connection} connections open.')
+                self.log.info('Stopping IOLoop')
+                io_loop.stop()
+                self.log.info('Shutdown complete.')
+
+        def shutdown():
+            self.log.info(f'Will shutdown in {TORNADO_SHUTDOWN_WAIT} seconds ...')
+            try:
+                stop_loop(server, time.time() + TORNADO_SHUTDOWN_WAIT)
+            except BaseException as e:
+                self.log.warning(f'Error trying to shutdown Tornado: {str(e)}')
+
+        logging.warning('Caught signal: %s', sig)
+        io_loop.add_callback_from_signal(shutdown)
+
+
     def start(self):
 
         self.log.info("Starting the app.")
@@ -342,10 +381,15 @@ class AuthHub(Application):
 
         http_server = tornado.httpserver.HTTPServer(self.tornado_app)
         http_server.listen(self.port)
-        try:
-            IOLoop.instance().start()
-        except KeyboardInterrupt:
-            IOLoop.instance().stop()
+
+        signal.signal(signal.SIGTERM, partial(self.sig_handler, http_server))
+        signal.signal(signal.SIGINT, partial(self.sig_handler, http_server))
+
+
+        IOLoop.instance().start()
+        self.log.info("Cleanly shut down the server.")
+        # except KeyboardInterrupt:
+            # IOLoop.instance().stop()
 
 def main(argv=None):
     app = AuthHub()
