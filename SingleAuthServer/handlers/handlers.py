@@ -178,22 +178,29 @@ class SAMLLogin(SAMLBaseHandler):
 
         self.log.info("User %r has successfully SAML authenticated. Forwarding %r." % (username, self.auth_token_name))
 
-        # This is to get the unique ID for the server I'm interacting with.
+        # This is to get the return url for the server I'm interacting with to make sure the token cannot be used on other servers.
         return_url = self.request.arguments['RelayState'][0].decode('utf-8')
         parsed_url = list(urlparse(return_url))
         qs = parse_qs(parsed_url[4], keep_blank_values=True)
 
-        required_args = ['unique-id']
+        required_args = ['signed-return-url']
         for arg in required_args:
             if arg not in qs.keys():
                 self.log.warning("Authentication failed. Missing required return URL argument %r" % arg)
                 raise web.HTTPError(400)
 
-        unique_id = qs.pop('unique-id', '')[0]
+        reported_return_url = qs.pop('signed-return-url', '')[0]
+        reported_return_url = self.get_secure_cookie(name='signed-return-url', value=reported_return_url).decode('utf-8')
+
+        actual_return_url = parsed_url[0] + "://" + parsed_url[1] + parsed_url[2]
+
+        if not actual_return_url == reported_return_url:
+            self.log.warning("Actual and reported return URL are different! Actual URL is %r and return url is %r" % (actual_return_url, reported_return_url))
+            raise web.HTTPError(403)
         
         parsed_url[4] = urlencode(qs, doseq=True)
 
-        token_data = {'username': username, 'unique_id': unique_id}
+        token_data = {'username': username, 'return_url': reported_return_url}
         token_data = json.dumps(token_data).encode('utf-8')
 
         # Here we create a signed token that is the combination of the username and unique ID.
