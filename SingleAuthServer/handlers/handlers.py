@@ -180,8 +180,8 @@ class SAMLLogin(SAMLBaseHandler):
 
         # This is to get the return url for the server I'm interacting with to make sure the token cannot be used on other servers.
         return_url = self.request.arguments['RelayState'][0].decode('utf-8')
-        parsed_url = list(urlparse(return_url))
-        qs = parse_qs(parsed_url[4], keep_blank_values=True)
+        parsed_url = urlparse(return_url)
+        qs = parse_qs(parsed_url.query, keep_blank_values=True)
 
         required_args = ['signed-return-url']
         for arg in required_args:
@@ -192,23 +192,29 @@ class SAMLLogin(SAMLBaseHandler):
         reported_return_url = qs.pop('signed-return-url', '')[0]
         reported_return_url = self.get_secure_cookie(name='signed-return-url', value=reported_return_url).decode('utf-8')
 
-        actual_return_url = parsed_url[0] + "://" + parsed_url[1] + parsed_url[2]
+        actual_return_url = urlunparse(parsed_url._replace(params="", query="", fragment=""))
 
         if not actual_return_url == reported_return_url:
             self.log.warning("Actual and reported return URL are different! Actual URL is %r and return url is %r" % (actual_return_url, reported_return_url))
             raise web.HTTPError(403)
         
-        parsed_url[4] = urlencode(qs, doseq=True)
+        parsed_url = parsed_url._replace(query=urlencode(qs, doseq=True))
 
         token_data = {'username': username, 'return_url': reported_return_url}
         token_data = json.dumps(token_data).encode('utf-8')
 
         # Here we create a signed token that is the combination of the username and unique ID.
         return_token = self.create_signed_value(name=self.auth_token_name, value=token_data)
+        self.set_secure_cookie(name=self.auth_token_name, 
+                               value=token_data, 
+                               expires_days=None, 
+                               domain=parsed_url.netloc, 
+                               path=parsed_url.path)
 
         # Construct the final return url.
         return_url = urlunparse(parsed_url)
-        return_url = url_concat(return_url, {self.auth_token_name: return_token})
+        self.log.debug("The return_url is: %r" % return_url)
+        # return_url = url_concat(return_url, {self.auth_token_name: return_token})
 
         self.redirect(return_url)
 
