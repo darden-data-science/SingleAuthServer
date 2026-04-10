@@ -1,26 +1,25 @@
+import asyncio
+import binascii
+import json
+import logging
+import os
+import signal
+import time
+import uuid
+from functools import partial
+from urllib.parse import urlparse
+
+import tornado.httpserver
 from tornado import web
 from tornado.ioloop import IOLoop
-from tornado.log import app_log, access_log, gen_log
-import tornado.httpserver
-import os
-import logging
-import binascii
-import signal
-import asyncio
-import time
-from functools import partial
-
-from tornado_sqlalchemy import SQLAlchemy
-
+from tornado.log import access_log, app_log, gen_log
+from traitlets import Bool, Bytes, Integer, Unicode, default, observe, validate
+from traitlets import TraitError
 from traitlets.config import Application, catch_config_error
 
-from onelogin.saml2.idp_metadata_parser import OneLogin_Saml2_IdPMetadataParser
-
-from traitlets import List, Bool, Integer, Set, Unicode, Dict, Any, default, observe, Instance, Float, validate, Bytes, Type, TraitError
-from .handlers import SAMLLogin, SAMLMetadataHandler, Template404, HealthCheckHandler
-
-from .utils import url_path_join
-from .orm import db
+from .handlers import HealthCheckHandler, LoginHandler, Template404
+from .provider import load_provider_class
+from .utils import normalize_public_base_url, validate_absolute_http_url
 
 COOKIE_SECRET_BYTES = (
     32  # the number of bytes to use when generating new cookie secrets
@@ -33,26 +32,27 @@ TORNADO_SHUTDOWN_WAIT=10
 class AuthHub(Application):
 
     aliases = {
-        'log_level': 'AuthHub.log_level',
-        'f': 'AuthHub.config_file',
-        'config': 'AuthHub.config_file',
-        'port': 'AuthHub.port'
+        "log_level": "AuthHub.log_level",
+        "f": "AuthHub.config_file",
+        "config": "AuthHub.config_file",
+        "port": "AuthHub.port",
+        "provider": "AuthHub.provider_class",
     }
 
     flags = {
-        'debug': (
-            {'Application': {'log_level': logging.DEBUG}},
+        "debug": (
+            {"Application": {"log_level": logging.DEBUG}},
             "set log level to logging.DEBUG (maximize logging output)",
-    ),
-        'generate-config': (
-            {'AuthHub': {'generate_config': True}},
+        ),
+        "generate-config": (
+            {"AuthHub": {"generate_config": True}},
             "generate default config file",
-        )
+        ),
     }
 
     generate_config = Bool(False, help="Generate default config file").tag(config=True)
 
-    config_file = Unicode('authhub_config.py', help="The config file to load").tag(
+    config_file = Unicode("authhub_config.py", help="The config file to load").tag(
         config=True
     )
 
@@ -63,7 +63,7 @@ class AuthHub(Application):
         """
     ).tag(config=True, env='AUTH_COOKIE_SECRET')
 
-    @observe('cookie_secret')
+    @observe("cookie_secret")
     def _cookie_secret_check(self, change):
         secret = change.new
         if len(secret) > COOKIE_SECRET_BYTES:
@@ -74,100 +74,84 @@ class AuthHub(Application):
             )
 
     cookie_secret_file = Unicode(
-        'authhub_cookie_secret', help="""File in which to store the cookie secret."""
+        "authhub_cookie_secret", help="""File in which to store the cookie secret."""
     ).tag(config=True)
 
     port = Integer(default_value=8888, help="Port that server will listen on.").tag(config=True)
 
-    db_url = Unicode(
-        'sqlite:///authhub.sqlite',
-        help="url for the database. e.g. `sqlite:///authhub.sqlite`",
-    ).tag(config=True)
-
-    saml_custom_base_path = Unicode(
-        os.getcwd(),
+    provider_class = Unicode(
+        default_value="",
         help="""
-        Path to a set of custom settings for SAML and a subfolder called certs 
-        that holds the SP cert and key.
-        Default is the current working directory.
+        Import path for the configured authentication provider.
+        Example: `single_auth_saml.provider.SAMLProvider`.
         """,
     ).tag(config=True)
 
-    saml_settings = Dict(
+    public_base_url = Unicode(
+        default_value="",
         help="""
-        This is a nested dictionary of settings for the python3-saml toolkit.
+        Public base URL for this auth service, including any path prefix.
+        Used when providers need externally visible callback URLs.
         """,
-        config=True
-    )
+    ).tag(config=True)
 
-    saml_namespace = Dict(
-        default_value={ 
-            'ds'   : 'http://www.w3.org/2000/09/xmldsig#', 
-            'md'   : 'urn:oasis:names:tc:SAML:2.0:metadata', 
-            'saml' : 'urn:oasis:names:tc:SAML:2.0:assertion', 
-            'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol' 
-            },
+    auth_token_name = Unicode(
+        default_value="auth-token",
         help="""
-        The namespace for the SAML xml.
+        Secure cookie name used for the downstream authenticator contract.
         """,
-        config=True
-    )
+    ).tag(config=True)
 
-    xpath_username_location = Unicode(
-        default_value='//saml:NameID/text()',
-        config=True,
+    login_state_name = Unicode(
+        default_value="login-state",
         help="""
-        This is the xpath to the username location. The namespace is that given
-        in saml_namespace.
-        """
-    )
+        Signing namespace used for short-lived login state tokens.
+        """,
+    ).tag(config=True)
 
-    auto_IdP_metadata = Unicode(
+    login_state_ttl = Integer(
+        default_value=300,
+        help="Maximum age of a login state token in seconds.",
+    ).tag(config=True)
+
+    auth_token_cookie_domain = Unicode(
         default_value=None,
         allow_none=True,
         help="""
-        The url to download the IdP metadata. If None, then assume it is manually supplied.
+        Optional domain attribute for the auth-token cookie. If omitted, the
+        cookie is host-only.
         """,
-        config=True
-    )
+    ).tag(config=True)
 
-    metadata_url = Unicode(
-        default_value=r'/Shibboleth.sso/Metadata',
-        help=
-        """
-        The sub-url where the IdP will look for the metadata.
-        """,
-        config=True
-    )
+    @validate("public_base_url")
+    def _validate_public_base_url(self, proposal):
+        value = proposal["value"]
+        if not value:
+            return value
+        try:
+            return normalize_public_base_url(value)
+        except ValueError as exc:
+            raise TraitError(str(exc)) from exc
 
-    force_https = Unicode(
-        default_value = '',
-        help="""
-        This forces the tornado request to have https on. This is important for
-        running behind a reverse proxy. If it is "on", then this forces https
-        on. If "off", forces it off. If blank (the default), the application
-        decides.
-        """,
-        config=True
-    )
+    @validate("auth_token_cookie_domain")
+    def _validate_auth_token_cookie_domain(self, proposal):
+        value = proposal["value"]
+        if value and ":" in value:
+            raise TraitError(
+                "auth_token_cookie_domain must not include a port number."
+            )
+        return value
 
-    @validate('force_https')
-    def _valid_force_https(self, proposal):
-        force_https = proposal['value']
-        if force_https not in ["on", "off", ""]:
-            raise TraitError('force_https should be \'on\', \'off\', or \'\', but instead it is: %r' % str(force_https))
-        return proposal['value']
-
-    @default('log_level')
+    @default("log_level")
     def _log_level_default(self):
         return logging.INFO
 
-    @default('log_datefmt')
+    @default("log_datefmt")
     def _log_datefmt_default(self):
         """Exclude date from default date format"""
         return "%Y-%m-%d %H:%M:%S"
 
-    @default('log_format')
+    @default("log_format")
     def _log_format_default(self):
         """override default log format to include time"""
         return "[%(levelname)1.1s %(asctime)s.%(msecs).03d %(name)s %(module)s:%(lineno)d] %(message)s"
@@ -182,32 +166,29 @@ class AuthHub(Application):
                 )
             )
         if os.path.exists(self.config_file):
-            answer = ''
+            answer = ""
 
             def ask():
                 prompt = "Overwrite %s with default config? [y/N]" % self.config_file
                 try:
-                    return input(prompt).lower() or 'n'
+                    return input(prompt).lower() or "n"
                 except KeyboardInterrupt:
-                    print('')  # empty line
-                    return 'n'
+                    print("")  # empty line
+                    return "n"
 
             answer = ask()
-            while not answer.startswith(('y', 'n')):
+            while not answer.startswith(("y", "n")):
                 print("Please answer 'yes' or 'no'")
                 answer = ask()
-            if answer.startswith('n'):
+            if answer.startswith("n"):
                 return
 
         config_text = self.generate_config_file()
         if isinstance(config_text, bytes):
-            config_text = config_text.decode('utf8')
+            config_text = config_text.decode("utf8")
         print("Writing default config to: %s" % self.config_file)
-        with open(self.config_file, mode='w') as f:
+        with open(self.config_file, mode="w") as f:
             f.write(config_text)
-
-
-
 
     @catch_config_error
     def initialize(self, *args, **kwargs):
@@ -216,34 +197,41 @@ class AuthHub(Application):
         self.parse_command_line(*args, **kwargs)
         if self.generate_config:
             return
-        
+
         self.log.info("Loading config")
         self.load_config_file(self.config_file)
-        if self.auto_IdP_metadata:
-            self.log.info("Getting the IdP metadata.")
-            idp_data = OneLogin_Saml2_IdPMetadataParser.parse_remote(self.auto_IdP_metadata)
-            self.saml_settings = OneLogin_Saml2_IdPMetadataParser.merge_settings(self.saml_settings, idp_data)
 
         self.init_logging()
-        self.init_db()
         self.init_secrets()
+        self.init_provider()
         self.init_handlers()
         self.init_tornado_settings()
         self.init_tornado()
-    
+
+    def validate_runtime_configuration(self):
+        if not self.provider_class:
+            raise TraitError("provider_class must be configured.")
+        if not self.public_base_url:
+            raise TraitError("public_base_url must be configured.")
+        self.public_base_url = normalize_public_base_url(self.public_base_url)
+
+    def init_provider(self):
+        self.log.info("Initializing provider.")
+        self.validate_runtime_configuration()
+        provider_class = load_provider_class(self.provider_class)
+        self.provider = provider_class(self)
+        self.provider.validate_configuration()
+
     def init_handlers(self):
         self.log.info("Initializing handlers.")
-        self.handlers = [
-                         (r"/saml-login", SAMLLogin),
-                         (self.metadata_url, SAMLMetadataHandler),
-                         (r'/health$', HealthCheckHandler),
-                         (r'(.*)', Template404)
-                         ]
-
-    def init_db(self):
-        self.log.info("Initializing the database.")
-        db.configure(self.db_url, engine_options={'echo': False})
-        db.create_all()
+        self.handlers = [(r"/login", LoginHandler)]
+        self.handlers.extend(self.provider.get_handlers())
+        self.handlers.extend(
+            [
+                (r"/health$", HealthCheckHandler),
+                (r"(.*)", Template404),
+            ]
+        )
 
     def init_logging(self):
         self.log.info("Initializing loggers.")
@@ -269,37 +257,114 @@ class AuthHub(Application):
     def init_tornado_settings(self):
         self.log.info("Initializing tornado settings.")
         self.tornado_settings = dict(
-            config = self.config,
+            config=self.config,
             log=self.log,
-            cookie_secret = self.cookie_secret,
-            saml_custom_base_path = self.saml_custom_base_path,
-            saml_settings = self.saml_settings,
-            saml_namespace = self.saml_namespace,
-            xpath_username_location = self.xpath_username_location,
-            force_https = self.force_https,
-            app = self,
-            db = db
+            cookie_secret=self.cookie_secret,
+            app=self,
+            provider=self.provider,
         )
 
     def init_tornado(self):
         self.log.info("Initializing tornado app.")
         self.tornado_app = web.Application(handlers=self.handlers, **self.tornado_settings)
 
+    def validate_return_url(self, return_url):
+        validate_absolute_http_url(return_url, label="return-url")
+        return return_url
+
+    def issue_login_state(self, return_url):
+        payload = json.dumps(
+            {
+                "return_url": return_url,
+                "iat": int(time.time()),
+                "nonce": uuid.uuid4().hex,
+            }
+        ).encode("utf-8")
+        return web.create_signed_value(
+            self.cookie_secret,
+            self.login_state_name,
+            payload,
+        ).decode("utf-8")
+
+    def decode_login_state(self, state_token):
+        decoded = web.decode_signed_value(
+            self.cookie_secret,
+            self.login_state_name,
+            state_token,
+        )
+        if decoded is None:
+            raise web.HTTPError(403, log_message="Invalid login state.")
+
+        try:
+            payload = json.loads(decoded.decode("utf-8"))
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise web.HTTPError(403, log_message="Invalid login state.") from exc
+
+        return_url = payload.get("return_url")
+        issued_at = payload.get("iat")
+        nonce = payload.get("nonce")
+
+        if not isinstance(return_url, str) or not isinstance(nonce, str):
+            raise web.HTTPError(403, log_message="Invalid login state.")
+
+        try:
+            issued_at = int(issued_at)
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPError(403, log_message="Invalid login state.") from exc
+
+        if int(time.time()) > issued_at + self.login_state_ttl:
+            raise web.HTTPError(403, log_message="Expired login state.")
+
+        try:
+            self.validate_return_url(return_url)
+        except ValueError as exc:
+            raise web.HTTPError(403, log_message=str(exc)) from exc
+
+        return payload
+
+    def finalize_login(self, handler, username, state_token):
+        if not username:
+            raise web.HTTPError(403, log_message="Missing username.")
+
+        payload = self.decode_login_state(state_token)
+        return_url = payload["return_url"]
+        parsed_return_url = urlparse(return_url)
+        cookie_path = parsed_return_url.path or "/"
+
+        token_data = json.dumps(
+            {"username": username, "return_url": return_url}
+        ).encode("utf-8")
+
+        cookie_kwargs = dict(
+            name=self.auth_token_name,
+            value=token_data,
+            expires_days=None,
+            path=cookie_path,
+            secure=parsed_return_url.scheme == "https",
+            httponly=True,
+        )
+        if self.auth_token_cookie_domain:
+            cookie_kwargs["domain"] = self.auth_token_cookie_domain
+
+        self.log.info("User %r authenticated. Setting %r.", username, self.auth_token_name)
+        handler.set_secure_cookie(**cookie_kwargs)
+        handler.redirect(return_url)
+
     def init_secrets(self):
-        trait_name = 'cookie_secret'
+        trait_name = "cookie_secret"
         trait = self.traits()[trait_name]
-        env_name = trait.metadata.get('env')
+        env_name = trait.metadata.get("env")
         secret_file = os.path.abspath(os.path.expanduser(self.cookie_secret_file))
         secret = self.cookie_secret
-        secret_from = 'config'
+        secret_from = "config"
         # load priority: 1. config, 2. env, 3. file
         secret_env = os.environ.get(env_name)
         if not secret and secret_env:
-            secret_from = 'env'
+            secret_from = "env"
             self.log.info("Loading %s from env[%s]", trait_name, env_name)
             secret = binascii.a2b_hex(secret_env)
         if not secret and os.path.exists(secret_file):
-            secret_from = 'file'
+            secret_from = "file"
             self.log.info("Loading %s from %s", trait_name, secret_file)
             try:
                 if not _mswindows:  # Windows permissions don't follow POSIX rules
@@ -320,17 +385,17 @@ class AuthHub(Application):
                 self.exit(1)
 
         if not secret:
-            secret_from = 'new'
+            secret_from = "new"
             self.log.debug("Generating new %s", trait_name)
             secret = os.urandom(COOKIE_SECRET_BYTES)
 
-        if secret_file and secret_from == 'new':
+        if secret_file and secret_from == "new":
             # if we generated a new secret, store it in the secret_file
             self.log.info("Writing %s to %s", trait_name, secret_file)
-            text_secret = binascii.b2a_hex(secret).decode('ascii')
-            with open(secret_file, 'w') as f:
+            text_secret = binascii.b2a_hex(secret).decode("ascii")
+            with open(secret_file, "w") as f:
                 f.write(text_secret)
-                f.write('\n')
+                f.write("\n")
             if not _mswindows:  # Windows permissions don't follow POSIX rules
                 try:
                     os.chmod(secret_file, 0o600)
@@ -340,37 +405,40 @@ class AuthHub(Application):
         self.cookie_secret = secret
 
     def sig_handler(self, server, sig, frame):
-        io_loop = tornado.ioloop.IOLoop.instance()
+        io_loop = IOLoop.instance()
 
-        def stop_loop(server: Any, deadline: float):
+        def stop_loop(server, deadline):
             now = time.time()
 
-            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+            tasks = [
+                t
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and not t.done()
+            ]
             if now < deadline and len(tasks) > 0:
-                self.log.info(f'Awaiting {len(tasks)} pending tasks: {tasks}')
+                self.log.info(f"Awaiting {len(tasks)} pending tasks: {tasks}")
                 io_loop.add_timeout(now + 1, stop_loop, server, deadline)
                 return
 
             pending_connection = len(server._connections)
             if now < deadline and pending_connection > 0:
-                self.log.info(f'Waiting on {pending_connection} connections to complete.')
+                self.log.info(f"Waiting on {pending_connection} connections to complete.")
                 io_loop.add_timeout(now + 1, stop_loop, server, deadline)
             else:
-                self.log.info(f'Continuing with {pending_connection} connections open.')
-                self.log.info('Stopping IOLoop')
+                self.log.info(f"Continuing with {pending_connection} connections open.")
+                self.log.info("Stopping IOLoop")
                 io_loop.stop()
-                self.log.info('Shutdown complete.')
+                self.log.info("Shutdown complete.")
 
         def shutdown():
-            self.log.info(f'Will shutdown in {TORNADO_SHUTDOWN_WAIT} seconds ...')
+            self.log.info(f"Will shutdown in {TORNADO_SHUTDOWN_WAIT} seconds ...")
             try:
                 stop_loop(server, time.time() + TORNADO_SHUTDOWN_WAIT)
             except BaseException as e:
-                self.log.warning(f'Error trying to shutdown Tornado: {str(e)}')
+                self.log.warning(f"Error trying to shutdown Tornado: {str(e)}")
 
-        logging.warning('Caught signal: %s', sig)
+        logging.warning("Caught signal: %s", sig)
         io_loop.add_callback_from_signal(shutdown)
-
 
     def start(self):
 
@@ -385,15 +453,16 @@ class AuthHub(Application):
         signal.signal(signal.SIGTERM, partial(self.sig_handler, http_server))
         signal.signal(signal.SIGINT, partial(self.sig_handler, http_server))
 
-
         IOLoop.instance().start()
         self.log.info("Cleanly shut down the server.")
-        # except KeyboardInterrupt:
-            # IOLoop.instance().stop()
+
 
 def main(argv=None):
     app = AuthHub()
-    app.initialize()
+    if argv is None:
+        app.initialize()
+    else:
+        app.initialize(argv)
     app.start()
 
 if __name__ == "__main__":
