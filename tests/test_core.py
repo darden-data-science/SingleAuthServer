@@ -8,7 +8,7 @@ from tornado.web import decode_signed_value
 from traitlets import TraitError
 
 from SingleAuthServer.app import AuthHub
-from tests.support import COOKIE_SECRET, build_auth_hub
+from tests.support import COOKIE_SECRET, build_auth_hub, make_signed_return_url
 
 
 class CoreLoginFlowTest(AsyncHTTPTestCase):
@@ -21,6 +21,9 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
             f"/login?return-url={quote(return_url, safe='')}",
             follow_redirects=False,
         )
+
+    def make_return_url(self, actual_return_url, extra_query=None):
+        return make_signed_return_url(self.hub, actual_return_url, extra_query)
 
     def decode_auth_cookie(self, response):
         cookie = SimpleCookie()
@@ -44,8 +47,9 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
         )
         self.assertEqual(response.code, 400)
 
-    def test_login_flow_sets_cookie_and_redirects_to_exact_return_url(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login?next=%2Flab"
+    def test_login_flow_sets_cookie_and_redirects_to_verified_return_url(self):
+        actual_return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(actual_return_url, {"next": "/lab"})
         login_response = self.fetch_login(return_url)
         self.assertEqual(login_response.code, 302)
 
@@ -56,19 +60,24 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
 
         callback_response = self.fetch(callback_path, follow_redirects=False)
         self.assertEqual(callback_response.code, 302)
-        self.assertEqual(callback_response.headers["Location"], return_url)
+        self.assertEqual(
+            callback_response.headers["Location"],
+            "https://hub.example.test/jupyter/hub/external-login?next=%2Flab",
+        )
 
         payload, cookie_header = self.decode_auth_cookie(callback_response)
         self.assertEqual(
             payload,
-            {"username": "alice", "return_url": return_url},
+            {"username": "alice", "return_url": actual_return_url},
         )
         self.assertIn("Path=/jupyter/hub/external-login", cookie_header)
         self.assertIn("Secure", cookie_header)
-        self.assertNotIn("Domain=", cookie_header)
+        self.assertIn("Domain=hub.example.test", cookie_header)
 
     def test_tampered_login_state_is_rejected(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
         login_response = self.fetch_login(return_url)
         provider_redirect = urlparse(login_response.headers["Location"])
         state_token = parse_qs(provider_redirect.query)["state"][0]
@@ -81,7 +90,9 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
         self.assertEqual(response.code, 403)
 
     def test_expired_login_state_is_rejected(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
         login_response = self.fetch_login(return_url)
         provider_redirect = urlparse(login_response.headers["Location"])
         state_token = parse_qs(provider_redirect.query)["state"][0]
@@ -94,7 +105,9 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
         self.assertEqual(response.code, 403)
 
     def test_cookie_domain_can_be_configured(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
         login_response = self.fetch_login(return_url)
         provider_redirect = urlparse(login_response.headers["Location"])
         self.hub.auth_token_cookie_domain = "example.test"
@@ -106,6 +119,34 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
         callback_response = self.fetch(callback_path, follow_redirects=False)
         self.assertEqual(callback_response.code, 302)
         self.assertIn("Domain=example.test", callback_response.headers["Set-Cookie"])
+
+    def test_missing_signed_return_url_is_rejected(self):
+        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        login_response = self.fetch_login(return_url)
+        provider_redirect = urlparse(login_response.headers["Location"])
+
+        callback_path = provider_redirect.path
+        if provider_redirect.query:
+            callback_path = f"{callback_path}?{provider_redirect.query}"
+
+        callback_response = self.fetch(callback_path, follow_redirects=False)
+        self.assertEqual(callback_response.code, 400)
+
+    def test_tampered_signed_return_url_is_rejected(self):
+        actual_return_url = "https://hub.example.test/jupyter/hub/external-login"
+        other_return_url = "https://hub.example.test/jupyter/hub/other-login"
+        return_url = make_signed_return_url(self.hub, other_return_url)
+        return_url = return_url.replace(other_return_url, actual_return_url, 1)
+
+        login_response = self.fetch_login(return_url)
+        provider_redirect = urlparse(login_response.headers["Location"])
+
+        callback_path = provider_redirect.path
+        if provider_redirect.query:
+            callback_path = f"{callback_path}?{provider_redirect.query}"
+
+        callback_response = self.fetch(callback_path, follow_redirects=False)
+        self.assertEqual(callback_response.code, 403)
 
 
 class ProviderValidationTest(unittest.TestCase):

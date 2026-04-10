@@ -1,5 +1,6 @@
 import json
 from http.cookies import SimpleCookie
+import time
 from unittest import mock
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -7,7 +8,7 @@ from tornado.testing import AsyncHTTPTestCase
 from tornado.web import decode_signed_value
 
 import single_auth_saml.provider as saml_provider_module
-from tests.support import build_auth_hub
+from tests.support import build_auth_hub, make_signed_return_url
 
 
 class FakeEtreeTree:
@@ -54,6 +55,8 @@ class FakeSAMLAuth:
     errors = []
     last_error_reason = ""
     response_xml = b"<Response />"
+    message_id = "message-1"
+    assertion_not_on_or_after = int(time.time()) + 300
     last_login_return_to = None
     last_request = None
     last_settings = None
@@ -65,6 +68,8 @@ class FakeSAMLAuth:
         cls.errors = []
         cls.last_error_reason = ""
         cls.response_xml = b"<Response />"
+        cls.message_id = "message-1"
+        cls.assertion_not_on_or_after = int(time.time()) + 300
         cls.last_login_return_to = None
         cls.last_request = None
         cls.last_settings = None
@@ -98,6 +103,12 @@ class FakeSAMLAuth:
 
     def get_last_response_xml(self):
         return type(self).response_xml
+
+    def get_last_message_id(self):
+        return type(self).message_id
+
+    def get_last_assertion_not_on_or_after(self):
+        return type(self).assertion_not_on_or_after
 
     def get_settings(self):
         return FakeMetadataSettings()
@@ -169,6 +180,9 @@ class SAMLProviderTest(AsyncHTTPTestCase):
             follow_redirects=False,
         )
 
+    def make_return_url(self, actual_return_url, extra_query=None):
+        return make_signed_return_url(self.hub, actual_return_url, extra_query)
+
     def decode_auth_cookie(self, response):
         cookie = SimpleCookie()
         cookie.load(response.headers["Set-Cookie"])
@@ -181,7 +195,9 @@ class SAMLProviderTest(AsyncHTTPTestCase):
         return json.loads(decoded.decode("utf-8"))
 
     def test_login_redirect_round_trips_login_state_in_relay_state(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
         response = self.fetch_login(return_url)
         self.assertEqual(response.code, 302)
 
@@ -198,7 +214,8 @@ class SAMLProviderTest(AsyncHTTPTestCase):
         )
 
     def test_callback_extracts_username_and_finishes_login(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login?next=%2Flab"
+        actual_return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(actual_return_url, {"next": "/lab"})
         login_response = self.fetch_login(return_url)
         relay_state = parse_qs(urlparse(login_response.headers["Location"]).query)[
             "RelayState"
@@ -211,15 +228,25 @@ class SAMLProviderTest(AsyncHTTPTestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.code, 302)
-        self.assertEqual(response.headers["Location"], return_url)
+        self.assertEqual(
+            response.headers["Location"],
+            "https://hub.example.test/jupyter/hub/external-login?next=%2Flab",
+        )
         self.assertEqual(
             self.decode_auth_cookie(response),
-            {"username": "alice", "return_url": return_url},
+            {"username": "alice", "return_url": actual_return_url},
         )
         self.assertEqual(FakeEtree.last_xpath, "//saml:NameID/text()")
         self.assertEqual(
             FakeEtree.last_namespaces,
             self.hub.provider.saml_namespace,
+        )
+
+        cookie = SimpleCookie()
+        cookie.load(response.headers["Set-Cookie"])
+        self.assertEqual(
+            cookie[self.hub.auth_token_name]["domain"],
+            "hub.example.test",
         )
 
     def test_metadata_endpoint_returns_sp_metadata(self):
@@ -229,7 +256,9 @@ class SAMLProviderTest(AsyncHTTPTestCase):
         self.assertEqual(response.body.decode("utf-8"), "<EntityDescriptor />")
 
     def test_unauthenticated_saml_response_is_rejected(self):
-        return_url = "https://hub.example.test/jupyter/hub/external-login"
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
         login_response = self.fetch_login(return_url)
         relay_state = parse_qs(urlparse(login_response.headers["Location"]).query)[
             "RelayState"
@@ -243,3 +272,28 @@ class SAMLProviderTest(AsyncHTTPTestCase):
             follow_redirects=False,
         )
         self.assertEqual(response.code, 403)
+
+    def test_replayed_saml_message_is_rejected(self):
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
+        login_response = self.fetch_login(return_url)
+        relay_state = parse_qs(urlparse(login_response.headers["Location"]).query)[
+            "RelayState"
+        ][0]
+
+        first_response = self.fetch(
+            "/auth/callback",
+            method="POST",
+            body=urlencode({"RelayState": relay_state}),
+            follow_redirects=False,
+        )
+        self.assertEqual(first_response.code, 302)
+
+        second_response = self.fetch(
+            "/auth/callback",
+            method="POST",
+            body=urlencode({"RelayState": relay_state}),
+            follow_redirects=False,
+        )
+        self.assertEqual(second_response.code, 403)

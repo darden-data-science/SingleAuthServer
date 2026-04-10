@@ -4,16 +4,18 @@ SingleAuthServer is a small Tornado application that acts as a trusted external
 login service for another Tornado-based app, such as JupyterHub via
 [ExternalAuthenticator](https://github.com/darden-data-science/ExternalAuthenticator).
 
-The core server accepts a `return-url`, delegates authentication to a configured
-provider, sets a secure `auth-token` cookie with the shared Tornado
-`cookie_secret`, and redirects the browser back to the exact `return-url`.
+The core server accepts a downstream `return-url`, delegates authentication to a
+configured provider, verifies the downstream `signed-return-url` proof, sets a
+secure `auth-token` cookie with the shared Tornado `cookie_secret`, and
+redirects the browser back to the verified return URL.
 
 This repository now has two layers:
 
 - `SingleAuthServer`: provider-agnostic core server and signed login-state flow.
 - `single_auth_saml`: plugin-style SAML provider with its own config and routes.
 
-The core server is stateless. It no longer stores users or replay history.
+The core server keeps SQL-backed auth state so providers can persist security
+data such as replay-protection history.
 
 ## Installation
 
@@ -41,12 +43,14 @@ c.AuthHub.provider_class = "single_auth_saml.provider.SAMLProvider"
 Available core settings include:
 
 - `c.AuthHub.port`
+- `c.AuthHub.db_url`
 - `c.AuthHub.public_base_url`
 - `c.AuthHub.provider_class`
 - `c.AuthHub.cookie_secret` or `AUTH_COOKIE_SECRET`
 - `c.AuthHub.auth_token_name`
 - `c.AuthHub.login_state_name`
 - `c.AuthHub.login_state_ttl`
+- `c.AuthHub.signed_return_url_name`
 - `c.AuthHub.auth_token_cookie_domain`
 
 ## SAML Provider Configuration
@@ -78,11 +82,12 @@ The SAML provider derives the SP metadata URL and assertion consumer URL from
 
 ## Runtime Flow
 
-1. `GET /login?return-url=<hub callback URL>` creates a short-lived signed
-   login-state token.
+1. `GET /login?return-url=<hub callback URL with signed-return-url proof>`
+   creates a short-lived signed login-state token.
 2. The configured provider starts authentication and round-trips that token.
-3. On success, the core verifies the state token, sets the `auth-token` secure
-   cookie, and redirects back to the exact `return-url`.
+3. On success, the core verifies the login state, validates the downstream
+   `signed-return-url`, sets the `auth-token` secure cookie for the destination
+   server domain, and redirects back to the verified return URL.
 
 The `auth-token` payload is JSON:
 

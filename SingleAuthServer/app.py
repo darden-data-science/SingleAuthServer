@@ -1,5 +1,6 @@
 import asyncio
 import binascii
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -7,7 +8,7 @@ import signal
 import time
 import uuid
 from functools import partial
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import tornado.httpserver
 from tornado import web
@@ -18,6 +19,7 @@ from traitlets import TraitError
 from traitlets.config import Application, catch_config_error
 
 from .handlers import HealthCheckHandler, LoginHandler, Template404
+from .orm import create_session_factory
 from .provider import load_provider_class
 from .utils import normalize_public_base_url, validate_absolute_http_url
 
@@ -79,6 +81,11 @@ class AuthHub(Application):
 
     port = Integer(default_value=8888, help="Port that server will listen on.").tag(config=True)
 
+    db_url = Unicode(
+        default_value="sqlite:///authhub.sqlite",
+        help="Database URL used for persisted auth state and replay protection.",
+    ).tag(config=True)
+
     provider_class = Unicode(
         default_value="",
         help="""
@@ -112,6 +119,11 @@ class AuthHub(Application):
     login_state_ttl = Integer(
         default_value=300,
         help="Maximum age of a login state token in seconds.",
+    ).tag(config=True)
+
+    signed_return_url_name = Unicode(
+        default_value="signed-return-url",
+        help="Signed query argument used to prove the downstream return URL.",
     ).tag(config=True)
 
     auth_token_cookie_domain = Unicode(
@@ -202,6 +214,7 @@ class AuthHub(Application):
         self.load_config_file(self.config_file)
 
         self.init_logging()
+        self.init_db()
         self.init_secrets()
         self.init_provider()
         self.init_handlers()
@@ -221,6 +234,22 @@ class AuthHub(Application):
         provider_class = load_provider_class(self.provider_class)
         self.provider = provider_class(self)
         self.provider.validate_configuration()
+
+    def init_db(self):
+        self.log.info("Initializing the database.")
+        self.db_engine, self.db_session_factory = create_session_factory(self.db_url)
+
+    @contextmanager
+    def make_session(self):
+        session = self.db_session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def init_handlers(self):
         self.log.info("Initializing handlers.")
@@ -322,17 +351,63 @@ class AuthHub(Application):
 
         return payload
 
+    def validate_signed_return_url(self, handler, return_url):
+        parsed_return_url = urlparse(return_url)
+        query_args = parse_qs(parsed_return_url.query, keep_blank_values=True)
+
+        if self.signed_return_url_name not in query_args:
+            raise web.HTTPError(
+                400,
+                log_message=(
+                    f"Missing required return URL argument "
+                    f"{self.signed_return_url_name!r}."
+                ),
+            )
+
+        signed_return_url = query_args.pop(self.signed_return_url_name, [""])[0]
+        reported_return_url = handler.get_secure_cookie(
+            name=self.signed_return_url_name,
+            value=signed_return_url,
+        )
+        if reported_return_url is None:
+            raise web.HTTPError(403, log_message="Invalid signed return-url.")
+
+        reported_return_url = reported_return_url.decode("utf-8")
+        actual_return_url = urlunparse(
+            parsed_return_url._replace(params="", query="", fragment="")
+        )
+
+        if actual_return_url != reported_return_url:
+            self.log.warning(
+                "Actual and reported return URLs differ. Actual URL is %r and "
+                "reported return URL is %r",
+                actual_return_url,
+                reported_return_url,
+            )
+            raise web.HTTPError(403, log_message="Invalid return-url proof.")
+
+        redirect_return_url = urlunparse(
+            parsed_return_url._replace(query=urlencode(query_args, doseq=True))
+        )
+
+        return reported_return_url, redirect_return_url, parsed_return_url
+
     def finalize_login(self, handler, username, state_token):
         if not username:
             raise web.HTTPError(403, log_message="Missing username.")
 
         payload = self.decode_login_state(state_token)
         return_url = payload["return_url"]
-        parsed_return_url = urlparse(return_url)
+        (
+            reported_return_url,
+            redirect_return_url,
+            parsed_return_url,
+        ) = self.validate_signed_return_url(handler, return_url)
         cookie_path = parsed_return_url.path or "/"
+        cookie_domain = self.auth_token_cookie_domain or parsed_return_url.hostname
 
         token_data = json.dumps(
-            {"username": username, "return_url": return_url}
+            {"username": username, "return_url": reported_return_url}
         ).encode("utf-8")
 
         cookie_kwargs = dict(
@@ -343,12 +418,12 @@ class AuthHub(Application):
             secure=parsed_return_url.scheme == "https",
             httponly=True,
         )
-        if self.auth_token_cookie_domain:
-            cookie_kwargs["domain"] = self.auth_token_cookie_domain
+        if cookie_domain:
+            cookie_kwargs["domain"] = cookie_domain
 
         self.log.info("User %r authenticated. Setting %r.", username, self.auth_token_name)
         handler.set_secure_cookie(**cookie_kwargs)
-        handler.redirect(return_url)
+        handler.redirect(redirect_return_url)
 
     def init_secrets(self):
         trait_name = "cookie_secret"

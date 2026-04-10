@@ -1,11 +1,13 @@
 import os
 from copy import deepcopy
+import time
 from urllib.parse import urlparse
 
 from tornado import web
 from traitlets import Dict, TraitError, Unicode, validate
 
 from SingleAuthServer.handlers import BaseHandler
+from SingleAuthServer.orm import User
 from SingleAuthServer.provider import BaseAuthProvider
 
 try:
@@ -169,6 +171,45 @@ class SAMLProvider(BaseAuthProvider):
             )
         return usernames[0]
 
+    def remove_expired_message_ids(self, message_history):
+        now = time.time()
+        keys = [
+            key
+            for key, value in message_history.items()
+            if not isinstance(value, (int, float)) or value < now
+        ]
+        for key in keys:
+            message_history.pop(key, None)
+        return message_history
+
+    def prevent_replay(self, username, message_id, assertion_not_on_or_after):
+        if not message_id:
+            self.log.warning("SAML response did not include a message ID.")
+            raise web.HTTPError(403, log_message="Invalid login credentials.")
+
+        with self.auth_hub.make_session() as session:
+            user = session.query(User).filter(User.username == username).first()
+            if user is None:
+                self.log.info("User %r is not in the database. Adding...", username)
+                user = User(username=username, auth_state={})
+                session.add(user)
+
+            if isinstance(user.auth_state, dict):
+                auth_state = deepcopy(user.auth_state)
+            else:
+                auth_state = {}
+
+            message_history = auth_state.setdefault("saml_message_history", {})
+            message_history = self.remove_expired_message_ids(message_history)
+
+            if message_id in message_history:
+                self.log.warning("Replay attack on user %r. Stop authentication.", username)
+                raise web.HTTPError(403, log_message="Invalid login credentials.")
+
+            message_history[message_id] = assertion_not_on_or_after
+            auth_state["saml_message_history"] = message_history
+            user.auth_state = auth_state
+
 
 class SAMLCallbackHandler(BaseHandler):
     def post(self):
@@ -190,6 +231,11 @@ class SAMLCallbackHandler(BaseHandler):
             raise web.HTTPError(400, log_message="Missing RelayState.")
 
         username = self.provider.extract_username(auth.get_last_response_xml())
+        self.provider.prevent_replay(
+            username,
+            auth.get_last_message_id(),
+            auth.get_last_assertion_not_on_or_after(),
+        )
         self.auth_hub.finalize_login(self, username, state_token)
 
 

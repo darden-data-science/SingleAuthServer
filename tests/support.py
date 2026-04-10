@@ -1,3 +1,4 @@
+from tornado import web
 from tornado.httputil import url_concat
 from traitlets import TraitError
 from traitlets.config import Config
@@ -48,6 +49,7 @@ def build_auth_hub(extra_config=None, trait_overrides=None):
                 "AuthHub": {
                     "provider_class": "tests.support.FakeProvider",
                     "public_base_url": "https://auth.example.test",
+                    "db_url": "sqlite://",
                 }
             }
         )
@@ -60,8 +62,20 @@ def build_auth_hub(extra_config=None, trait_overrides=None):
         setattr(hub, trait_name, value)
 
     hub.init_logging()
+    hub.init_db()
     hub.init_provider()
     hub.init_handlers()
     hub.init_tornado_settings()
     hub.init_tornado()
     return hub
+
+
+def make_signed_return_url(hub, actual_return_url, extra_query=None):
+    signed_value = web.create_signed_value(
+        hub.cookie_secret,
+        hub.signed_return_url_name,
+        actual_return_url.encode("utf-8"),
+    ).decode("utf-8")
+    query = dict(extra_query or {})
+    query[hub.signed_return_url_name] = signed_value
+    return url_concat(actual_return_url, query)

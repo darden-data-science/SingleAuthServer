@@ -9,6 +9,7 @@ authors = [
 ]
 requires-python = ">=3.8"
 dependencies = [
+    "sqlalchemy>=2.0",
     "tornado>=6.0.0",
     "traitlets>=4.3.3",
 ]
