@@ -1,0 +1,30 @@
+[project]
+name = "SingleAuthServer"
+version = "0.1.0.dev0"
+description = "SingleAuthServer: provider-driven external auth for shared-cookie Tornado apps."
+readme = "README.md"
+license = { text = "BSD" }
+authors = [
+    { name = "Michael Albert", email = "albertmichaelj@gmail.com" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    "tornado>=6.0.0",
+    "traitlets>=4.3.3",
+]
+
+[project.optional-dependencies]
+saml = [
+    "python3-saml>=1.9.0",
+    "lxml>=4.4.0",
+]
+
+[project.scripts]
+auth_server = "SingleAuthServer.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["SingleAuthServer*", "single_auth_saml*"]

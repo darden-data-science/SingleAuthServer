@@ -37,7 +37,7 @@ RUN adduser --disabled-password \
     --force-badname \
     ${AUTH_SERVER_USER}
 
-RUN python3 -m pip install --upgrade --no-cache setuptools pip
+RUN python3 -m pip install --upgrade --no-cache setuptools pip uv
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends pkg-config libxmlsec1-dev && \
@@ -45,10 +45,13 @@ RUN apt-get update && \
 
 COPY . /src/SingleAuthServer
 
-RUN python3 -m pip install /src/SingleAuthServer && \
-    rm -rf tmp/SingleAuthServer
+WORKDIR /src/SingleAuthServer
+
+RUN UV_LINK_MODE=copy uv sync --frozen --extra saml
 
 WORKDIR /srv/auth_server
+
+ENV PATH="/src/SingleAuthServer/.venv/bin:${PATH}"
 
 RUN chown ${AUTH_SERVER_USER}:${AUTH_SERVER_USER} /srv/auth_server
 
@@ -60,4 +63,4 @@ EXPOSE 8000
 
 USER ${AUTH_SERVER_USER}
 
-CMD ["auth_server", "--config", "/etc/auth_server/authhub_config.json"]
+CMD ["auth_server", "--config", "/etc/auth_server/authhub_config.py"]

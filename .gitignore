@@ -5,3 +5,5 @@ __pycache__
 *.egg-info
 authhub_cookie_secret
 authhub.sqlite
+.venv/
+.uv-cache/
