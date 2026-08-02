@@ -8,7 +8,7 @@
 > still `1e574d9` (2021), and the deployed DockerHub image `albertmichaelj/saml_single_auth_server:latest`
 > is built from **master**, not from this branch.
 >
-> The consuming helm chart — `auth-server/templates/configmap.yaml` in the `jupyterhub-config`
+> The consuming helm chart — `auth-server/templates/configmap.yaml` in the `jupyterhub-config-darden`
 > repo — emits pre-refactor config keys: `AuthHub.{auto_IdP_metadata, metadata_url,
 > xpath_username_location, force_https, saml_settings, saml_custom_base_path}`. This refactor
 > moved all of them to `SAMLProvider` and made `provider_class` + `public_base_url` mandatory
@@ -34,10 +34,10 @@ means every hub trusts me completely, and rotating the secret must happen across
 simultaneously.
 
 **Who consumes me:** `ExternalAuthenticator` (repo `darden-data-science/ExternalAuthenticator`)
-holds the other half. Deployed by the `auth-server/` helm chart in `jupyterhub-config`.
+holds the other half. Deployed by the `auth-server/` helm chart in `jupyterhub-config-darden`.
 
 **Full system map:** `/Users/Michael/Documents/Git Projects/Darden Jupyterhub/docs/SYSTEM-MAP.md`
-(repo `darden-data-science/jupyterhub-config`, private).
+(repo `darden-data-science/jupyterhub-config-darden`, private).
 
 ## Naming — three different strings
 
