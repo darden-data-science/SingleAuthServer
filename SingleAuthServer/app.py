@@ -20,6 +20,7 @@ from traitlets.config import Application, catch_config_error
 
 from sqlalchemy.exc import IntegrityError
 
+from ._version import __version__
 from .handlers import HealthCheckHandler, LoginHandler, Template404
 from .orm import LoginStateNonce, create_session_factory
 from .provider import load_provider_class
@@ -207,7 +208,14 @@ class AuthHub(Application):
     @catch_config_error
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
-        self.log.info("Initializing AuthHub")
+        # Log build identity first. When something is wrong in-cluster, the very
+        # first question is "which build is this?" — and an image tagged :latest
+        # cannot answer it. GIT_SHA is baked in by the Dockerfile.
+        self.log.info(
+            "Initializing AuthHub %s (commit %s)",
+            __version__,
+            os.environ.get("SINGLE_AUTH_SERVER_GIT_SHA", "unknown"),
+        )
         self.parse_command_line(*args, **kwargs)
         if self.generate_config:
             return

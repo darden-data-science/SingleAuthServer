@@ -1,5 +1,31 @@
 FROM ubuntu:20.04
 
+# Build provenance. Supplied by build-image.sh; the defaults below only apply to
+# a bare `docker build`, which is why they say "unknown" rather than a version
+# number that would silently lie.
+#
+#   docker inspect --format '{{json .Config.Labels}}' <image>
+#
+# tells you the exact commit any deployed container was built from. Without this
+# an image tagged :latest is unidentifiable after the fact — which is the reason
+# there was previously no rollback path.
+ARG VERSION=unknown
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="SingleAuthServer" \
+      org.opencontainers.image.description="Cluster-wide external auth service for JupyterHub." \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/darden-data-science/SingleAuthServer" \
+      org.opencontainers.image.licenses="BSD-3-Clause"
+
+# Also as env, so a running container can report its own identity without a
+# `docker inspect` from outside — useful when debugging a pod in-cluster.
+ENV SINGLE_AUTH_SERVER_VERSION="${VERSION}" \
+    SINGLE_AUTH_SERVER_GIT_SHA="${GIT_SHA}"
+
 ENV TZ=America/New_York
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 

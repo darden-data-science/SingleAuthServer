@@ -1,6 +1,8 @@
 [project]
 name = "SingleAuthServer"
-version = "0.1.0.dev0"
+# Read from SingleAuthServer/_version.py — see [tool.setuptools.dynamic] below.
+# Hardcoding it here as well would guarantee the two drift apart.
+dynamic = ["version"]
 description = "SingleAuthServer: provider-driven external auth for shared-cookie Tornado apps."
 readme = "README.md"
 license = { text = "BSD" }
@@ -27,5 +29,10 @@ auth_server = "SingleAuthServer.app:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.dynamic]
+version = { attr = "SingleAuthServer._version.__version__" }
+
 [tool.setuptools.packages.find]
+# dev/ is deliberately absent: it holds DevProvider, a login bypass, and must
+# never be packaged. See dev/README.md.
 include = ["SingleAuthServer*", "single_auth_saml*"]
