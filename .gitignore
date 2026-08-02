@@ -1,9 +1,17 @@
-authhub_config.py
+# Root-level local config and state. These are ANCHORED with a leading slash on
+# purpose: an unanchored `authhub_config.py` also matches dev/authhub_config.py,
+# which silently drops a tracked rig file from commits.
+/authhub_config.py
+/authhub_cookie_secret
+/authhub.sqlite
+
 .DS_Store
 /.vscode
 __pycache__
 *.egg-info
-authhub_cookie_secret
-authhub.sqlite
 .venv/
 .uv-cache/
+
+# dev rig: the source is tracked, the build output is not.
+dev/node_modules/
+dev/*.sqlite

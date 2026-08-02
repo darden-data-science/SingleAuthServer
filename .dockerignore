@@ -1,3 +1,16 @@
 authhub_config.py
 authhub_cookie_secret
 authhub.sqlite
+
+# The local test rig contains DevProvider, which is a deliberate login bypass.
+# It must never enter a built image. This is one of three independent guards —
+# see the module docstring in dev/dev_provider.py.
+dev/
+
+# Build/dev artifacts that would otherwise be baked in by `COPY .`
+.venv/
+.uv-cache/
+__pycache__/
+*.egg-info/
+.git/
+.DS_Store
