@@ -18,6 +18,28 @@ class User(Base):
     auth_state = Column(JSON)
 
 
+class LoginStateNonce(Base):
+    """A login-state nonce that has already been redeemed.
+
+    Deliberately keyed on the nonce alone and NOT on the username: providers
+    where the caller supplies the username (rather than deriving it from a
+    signed assertion) would otherwise let an attacker replay one login state
+    under a different name and dodge a per-user check.
+
+    Rows are pruned once past expires_at, so this table stays bounded by
+    login_state_ttl rather than growing with login volume.
+    """
+
+    __tablename__ = "login_state_nonces"
+
+    nonce = Column(Unicode(64), primary_key=True)
+    expires_at = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        nullable=False,
+        index=True,
+    )
+
+
 def create_session_factory(db_url):
     engine_options = {"future": True}
     if db_url in {"sqlite://", "sqlite:///:memory:"}:

@@ -18,8 +18,10 @@ from traitlets import Bool, Bytes, Integer, Unicode, default, observe, validate
 from traitlets import TraitError
 from traitlets.config import Application, catch_config_error
 
+from sqlalchemy.exc import IntegrityError
+
 from .handlers import HealthCheckHandler, LoginHandler, Template404
-from .orm import create_session_factory
+from .orm import LoginStateNonce, create_session_factory
 from .provider import load_provider_class
 from .utils import normalize_public_base_url, validate_absolute_http_url
 
@@ -349,7 +351,39 @@ class AuthHub(Application):
         except ValueError as exc:
             raise web.HTTPError(403, log_message=str(exc)) from exc
 
+        self.consume_login_state_nonce(nonce, issued_at + self.login_state_ttl)
+
         return payload
+
+    def consume_login_state_nonce(self, nonce, expires_at):
+        """Redeem a login-state nonce exactly once.
+
+        Signature and TTL checks alone do not stop a captured login state from
+        being submitted twice inside its TTL window. The SAML provider catches
+        that separately via the assertion message ID, but that protection is
+        provider-specific — this closes it for every provider.
+
+        Uniqueness is enforced by the primary key rather than a read-then-write,
+        so two concurrent redemptions of the same nonce cannot both win.
+        """
+        now = int(time.time())
+        with self.make_session() as session:
+            session.query(LoginStateNonce).filter(
+                LoginStateNonce.expires_at < now
+            ).delete(synchronize_session=False)
+
+            session.add(LoginStateNonce(nonce=nonce, expires_at=expires_at))
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                self.log.warning(
+                    "Login state nonce %r was already redeemed. "
+                    "Rejecting as a replay.",
+                    nonce,
+                )
+                raise web.HTTPError(
+                    403, log_message="Replayed login state."
+                ) from exc
 
     def validate_signed_return_url(self, handler, return_url):
         parsed_return_url = urlparse(return_url)

@@ -74,6 +74,76 @@ class CoreLoginFlowTest(AsyncHTTPTestCase):
         self.assertIn("Secure", cookie_header)
         self.assertIn("Domain=hub.example.test", cookie_header)
 
+    def test_replayed_login_state_is_rejected(self):
+        """A login state is single-use, even inside its TTL.
+
+        Signature and TTL checks alone let a captured state be submitted twice.
+        The SAML provider catches that via the assertion message ID, but that is
+        provider-specific; this must hold for every provider.
+        """
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
+        login_response = self.fetch_login(return_url)
+        provider_redirect = urlparse(login_response.headers["Location"])
+        callback_path = f"{provider_redirect.path}?{provider_redirect.query}"
+
+        first = self.fetch(callback_path, follow_redirects=False)
+        self.assertEqual(first.code, 302, "first redemption should succeed")
+
+        replay = self.fetch(callback_path, follow_redirects=False)
+        self.assertEqual(replay.code, 403, "replayed login state must be rejected")
+
+    def test_replayed_login_state_rejected_under_a_different_username(self):
+        """The nonce check must not be keyed on the username.
+
+        Providers that take the username from the caller (rather than from a
+        signed assertion) would otherwise let an attacker replay one login state
+        under a second name and land in a different account.
+        """
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
+        login_response = self.fetch_login(return_url)
+        provider_redirect = urlparse(login_response.headers["Location"])
+        state_token = parse_qs(provider_redirect.query)["state"][0]
+
+        def redeem(username):
+            return self.fetch(
+                f"{provider_redirect.path}"
+                f"?state={quote(state_token, safe='')}&username={username}",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(redeem("alice").code, 302)
+        self.assertEqual(redeem("mallory").code, 403)
+
+    def test_expired_nonces_are_pruned(self):
+        """The nonce table is bounded by the TTL, not by login volume."""
+        from SingleAuthServer.orm import LoginStateNonce
+
+        with self.hub.make_session() as session:
+            session.add(LoginStateNonce(nonce="stale-entry", expires_at=1))
+
+        # Any subsequent redemption triggers the prune.
+        return_url = self.make_return_url(
+            "https://hub.example.test/jupyter/hub/external-login"
+        )
+        login_response = self.fetch_login(return_url)
+        provider_redirect = urlparse(login_response.headers["Location"])
+        self.fetch(
+            f"{provider_redirect.path}?{provider_redirect.query}",
+            follow_redirects=False,
+        )
+
+        with self.hub.make_session() as session:
+            remaining = (
+                session.query(LoginStateNonce)
+                .filter(LoginStateNonce.nonce == "stale-entry")
+                .first()
+            )
+        self.assertIsNone(remaining, "expired nonce should have been pruned")
+
     def test_tampered_login_state_is_rejected(self):
         return_url = self.make_return_url(
             "https://hub.example.test/jupyter/hub/external-login"
