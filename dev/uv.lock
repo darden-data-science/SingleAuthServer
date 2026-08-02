@@ -547,8 +547,8 @@ wheels = [
 
 [[package]]
 name = "externalauthenticator"
-version = "1.0.0"
-source = { git = "https://github.com/darden-data-science/ExternalAuthenticator.git#5f92cf138ade35f49fd73b2a1a9a7fcdbeb046c8" }
+version = "1.0.1"
+source = { git = "https://github.com/darden-data-science/ExternalAuthenticator.git#10809f17f7012417b0465f90d40427bb3722d675" }
 dependencies = [
     { name = "jupyterhub" },
 ]
