@@ -1,0 +1,8 @@
+{
+  "name": "single-auth-dev-rig",
+  "private": true,
+  "description": "Local-only install of configurable-http-proxy for the JupyterHub side of the rig. Installs into dev/node_modules — never global, never on your system PATH.",
+  "dependencies": {
+    "configurable-http-proxy": "^5.0.0"
+  }
+}

@@ -1,0 +1,43 @@
+# Local end-to-end test rig for SingleAuthServer <-> ExternalAuthenticator.
+#
+# This is a SEPARATE uv project from the parent package on purpose:
+#   - SingleAuthServer must never depend on JupyterHub. The rig does.
+#   - Nothing here is packaged or installable (`package = false`), so it cannot
+#     ship in the wheel or the Docker image.
+#
+# Everything installs into dev/.venv. Nothing touches system Python.
+
+[project]
+name = "single-auth-dev-rig"
+version = "0.0.0"
+description = "Local end-to-end auth test rig. Not deployable. Contains a login bypass."
+requires-python = ">=3.10"
+
+dependencies = [
+    # The thing under test, from the local checkout, editable so edits to the
+    # refactor branch are picked up without reinstalling.
+    "SingleAuthServer",
+
+    # The other half of the wire contract. Pulled from GitHub's default branch,
+    # which is exactly what images/hub/Dockerfile installs into the hub image —
+    # so the rig tests the same code production runs.
+    "ExternalAuthenticator",
+
+    # A real JupyterHub, so the contract is exercised against the real
+    # Authenticator machinery rather than a mock.
+    "jupyterhub>=5,<6",
+
+    # So a successful login actually lands somewhere and you can see it worked.
+    "jupyterlab>=4",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+SingleAuthServer = { path = "..", editable = true }
+ExternalAuthenticator = { git = "https://github.com/darden-data-science/ExternalAuthenticator.git" }
+
+# To test local ExternalAuthenticator edits instead of the published branch,
+# comment out the git line above and uncomment this:
+# ExternalAuthenticator = { path = "../../ExternalAuthenticator", editable = true }
