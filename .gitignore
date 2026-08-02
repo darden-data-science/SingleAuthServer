@@ -1,3 +1,10 @@
+# SAML SP key material. This remote is PUBLIC — certs/sp.key is a private key
+# and auth_config.json embeds the same key in plaintext. Without these lines a
+# single `git add -A` publishes them irrecoverably.
+certs/
+/auth_config.json
+/auth_config_test.json
+
 # Root-level local config and state. These are ANCHORED with a leading slash on
 # purpose: an unanchored `authhub_config.py` also matches dev/authhub_config.py,
 # which silently drops a tracked rig file from commits.
