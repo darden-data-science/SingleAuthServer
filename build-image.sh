@@ -51,10 +51,22 @@ if ! git diff-index --quiet HEAD -- 2>/dev/null; then
   echo "         Commit before building anything you intend to deploy." >&2
 fi
 
+# :latest should only ever mean "the current state of the default branch".
+# Publishing it from a feature branch quietly redefines what everyone else's
+# unpinned pull resolves to.
+DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-master}
+TAGS=("$VERSION" "sha-$GIT_SHA")
+if [ "$BRANCH" = "$DEFAULT_BRANCH" ]; then
+  TAGS+=("latest")
+else
+  echo "NOTE: on branch '$BRANCH', not '$DEFAULT_BRANCH' — skipping the :latest tag." >&2
+fi
+
 echo "repo:    $REPO"
 echo "version: $VERSION"
 echo "commit:  $GIT_SHA_FULL ($BRANCH)"
-echo "tags:    $VERSION, sha-$GIT_SHA, latest"
+echo "tags:    ${TAGS[*]}"
 echo
 
 docker build \
@@ -62,9 +74,7 @@ docker build \
   --build-arg "VERSION=$VERSION" \
   --build-arg "GIT_SHA=$GIT_SHA_FULL" \
   --build-arg "BUILD_DATE=$BUILD_DATE" \
-  -t "$REPO:$VERSION" \
-  -t "$REPO:sha-$GIT_SHA" \
-  -t "$REPO:latest" \
+  $(printf -- '-t %s:%s ' $(for tag in "${TAGS[@]}"; do echo "$REPO" "$tag"; done)) \
   .
 
 echo
@@ -78,7 +88,7 @@ if [ "$PUSH" -eq 1 ]; then
       exit 1 ;;
   esac
   echo
-  for tag in "$VERSION" "sha-$GIT_SHA" latest; do
+  for tag in "${TAGS[@]}"; do
     echo "pushing $REPO:$tag"
     docker push "$REPO:$tag"
   done
