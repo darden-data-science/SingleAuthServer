@@ -22,3 +22,13 @@ __pycache__
 # dev rig: the source is tracked, the build output is not.
 dev/node_modules/
 dev/*.sqlite
+
+# setuptools build tree. `pip install .` and `python -m build` both leave one
+# behind, so it reappears after any local packaging run.
+/build/
+/dist/
+
+# Multi-root editor workspaces. These reference SIBLING repos by relative path
+# ("../UserDataHub"), so they only work for a checkout laid out exactly like the
+# author's -- local config, same as the /.vscode entry above.
+*.code-workspace
